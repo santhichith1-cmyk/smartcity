@@ -33,7 +33,7 @@ The page works in portrait and landscape and updates instantly when a sensor cha
 | Alarm | Fires when | Stops |
 |---|---|---|
 | **Potential disaster · Mountain** | Motion **and** vibration on together for 0.5 s | 30 s of quiet, or tap **Silence** |
-| **Earthquake detected** | Ground moves 4 cm or more **and** shakes, together for 0.5 s | 30 s of calm, or tap **Silence** |
+| **Tsunami alert** | Sea level high (water 4 cm or closer to the sensor) **and** shake level 50+, together for 0.5 s | 30 s of calm, or tap **Silence** |
 
 Both show a red banner, play `alarm.mp3`, flash the matching card and switch the OLED to
 its warning screen. After **Silence** the alarm re-arms once the sensors calm down.

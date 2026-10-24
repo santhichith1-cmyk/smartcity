@@ -79,9 +79,9 @@ ALARM_CLEAR_SEC = 30     # both sensors back to normal this long -> alarm stops 
 alarm = {"active": False, "since": None, "both_since": None, "calm_since": None, "armed": True}
 
 # ---- Seismic node (XIAO ESP32-C3): vibration pulses + ultrasonic movement, 5 times a second ----
-QUAKE_MOVE_CM = 4.0       # ultrasonic distance jump that counts as "big movement"
-QUAKE_PULSES = 2          # vibration flips in one 0.2 s report that count as "shaking"
-QUAKE_BOTH_SEC = 0.5      # movement AND shaking both on together this long -> earthquake (same rule as the mountain)
+SEA_HIGH_CM = 4.0         # ultrasonic distance to the water this close (or closer) = sea level HIGH
+QUAKE_SHAKE_MIN = 50      # vibration shake level (0-100) at or above this = strong shaking
+QUAKE_BOTH_SEC = 0.5      # sea level HIGH and strong shaking both on together this long -> tsunami alert
 QUAKE_WINDOW = 1.0        # nothing for this long = calm (used to stop the alert)
 SEISMIC_ACK_PORT = 8770   # we answer the seismic node here, so it knows the Pi hears it
 QUAKE_CLEAR_SEC = 30      # no movement and no shaking this long -> earthquake alert stops by itself
@@ -221,9 +221,10 @@ def alarm_tick():
     return changed
 
 
-def seismic_intensity(pulses, vib, move):
-    """0-100 shake level from one report: vibration flips and ultrasonic movement."""
-    return int(min(100, max(pulses * 6 + (8 if vib else 0), move * 10)))
+def seismic_intensity(pulses, vib, dt):
+    """0-100 shake level from the vibration sensor only (flips scaled to a 0.2 s report)."""
+    per_report = pulses * 0.2 / max(0.15, min(1.2, dt))
+    return int(min(100, per_report * 6 + (8 if vib else 0)))
 
 
 def apply_seismic(data, addr):
@@ -240,11 +241,13 @@ def apply_seismic(data, addr):
     now = time.time()
     pulses, move = int(nums["pulses"]), round(float(nums["move"]), 1)
     with state_lock:
-        seismic.update(seen=now, ip=addr[0], vib=bool(vib), pulses=pulses,
-                       cm=None if nums["cm"] < 0 else round(float(nums["cm"]), 1),
+        dt = now - seismic["seen"] if seismic["seen"] else 0.2
+        cm = None if nums["cm"] < 0 else round(float(nums["cm"]), 1)
+        seismic.update(seen=now, ip=addr[0], vib=bool(vib), pulses=pulses, cm=cm,
                        base=None if nums["base"] < 0 else round(float(nums["base"]), 1),
-                       move=move, intensity=seismic_intensity(pulses, vib, move))
-        shaking, moved = bool(vib) or pulses >= QUAKE_PULSES, move >= QUAKE_MOVE_CM
+                       move=move, intensity=seismic_intensity(pulses, vib, dt))
+        shaking = seismic["intensity"] >= QUAKE_SHAKE_MIN          # strong shaking
+        moved = cm is not None and cm <= SEA_HIGH_CM               # water close to the sensor = sea level high
         if shaking:
             seismic["shake_at"] = now
         if moved:
@@ -266,7 +269,7 @@ def apply_seismic(data, addr):
 
 
 def quake_tick(now):
-    """Earthquake = big ultrasonic movement AND shaking, both on together for QUAKE_BOTH_SEC.
+    """Tsunami alert = sea level HIGH (water <= SEA_HIGH_CM) AND strong shaking, together for QUAKE_BOTH_SEC.
     Call with state_lock held."""
     s = seismic
     online = s["seen"] is not None and now - s["seen"] < 3
@@ -283,7 +286,7 @@ def quake_tick(now):
             and now - quake["both_since"] >= QUAKE_BOTH_SEC):
         quake.update(active=True, since=now, calm_since=None, peak=s["intensity"])
         changed = True
-        print("EARTHQUAKE: movement + shaking together for %.1f s" % QUAKE_BOTH_SEC)
+        print("TSUNAMI ALERT: sea level high + strong shaking for %.1f s" % QUAKE_BOTH_SEC)
     if quake["active"]:
         if not calm:
             quake["calm_since"] = None
@@ -292,7 +295,7 @@ def quake_tick(now):
         elif now - quake["calm_since"] >= QUAKE_CLEAR_SEC:
             quake.update(active=False, since=None, calm_since=None)
             changed = True
-            print("Earthquake alert cleared (calm)")
+            print("Tsunami alert cleared (calm)")
     return changed
 
 
@@ -620,8 +623,8 @@ def history_tick(prev, dt):
         hist_event("alarm", "Potential disaster · Mountain (motion + vibration)" if cur["alarm"]
                    else "Alarm stopped", "warn" if cur["alarm"] else "ok")
     if prev.get("quake") is not None and prev["quake"] != cur["quake"]:
-        hist_event("quake", "Earthquake detected · ground movement + shaking" if cur["quake"]
-                   else "Earthquake alert ended", "warn" if cur["quake"] else "ok")
+        hist_event("quake", "Tsunami alert · sea level high + strong shaking" if cur["quake"]
+                   else "Tsunami alert ended", "warn" if cur["quake"] else "ok")
     if changed("trafficMode"):
         hist_event("traffic", "Traffic signal set to " + cur["trafficMode"])
     return cur
@@ -1367,7 +1370,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <li><i class="tdot" id="zd-weather"></i><b>Weather</b><span id="zt-weather">No data</span><small>Rainfall · Temperature</small></li>
             <li><i class="tdot" id="zd-environment"></i><b>Environment</b><span id="zt-environment">No data</span><small>Air quality · Soil moisture</small></li>
             <li><i class="tdot" id="zd-security"></i><b>Security</b><span id="zt-security">No data</span><small>Motion · Vibration</small></li>
-            <li><i class="tdot" id="zd-seismic"></i><b>Seismic</b><span id="zt-seismic">No data</span><small>Shaking · Ground movement</small></li>
+            <li><i class="tdot" id="zd-seismic"></i><b>Seismic</b><span id="zt-seismic">No data</span><small>Shaking · Sea level</small></li>
             <li><i class="tdot" id="zd-lighting"></i><b>Street lighting</b><span id="zt-lighting">No data</span><small>Ambient light</small></li>
             <li><i class="tdot" id="zd-traffic"></i><b>Traffic signal</b><span id="zt-traffic">No data</span><small>Red · Yellow · Green · Ultrasonic</small></li>
             <li><i class="tdot" id="zd-display"></i><b>Status display</b><span id="zt-display">No data</span><small>OLED screen</small></li>
@@ -1624,11 +1627,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="seisAxis"><span>60 s ago</span><span>30 s</span><span>now</span></div>
           <div class="seisStats">
             <div><span>Distance</span><b id="seisCm">--</b></div>
-            <div><span>Normal</span><b id="seisBase">--</b></div>
-            <div><span>Movement</span><b id="seisMove">--</b></div>
+            <div><span>Sea level</span><b id="seisBase">--</b></div>
+            <div><span>Shake level</span><b id="seisMove">--</b></div>
             <div><span>Shakes</span><b id="seisPulse">--</b></div>
           </div>
-          <div class="foot">Earthquake alert when the ground moves 4 cm or more <b>and</b> shakes, both together for 0.5 s</div>
+          <div class="foot">Tsunami alert when the water is 4 cm or closer to the sensor (sea level high) <b>and</b> the shake level is 50 or more, both together for 0.5 s</div>
         </section>
       </div>
     </div>
@@ -2000,15 +2003,15 @@ function paintAlarm() {
   $("secCard").classList.toggle("alarm", alarmActive);
   $("c-seis").classList.toggle("alarm", quakeActive);
   if (quakeActive) {
-    $("alarmTitle").textContent = "Earthquake detected · Seismic node" + (alarmActive ? " + Mountain" : "");
-    $("alarmTxt").textContent = "Ground movement and shaking together · started " +
+    $("alarmTitle").textContent = "Tsunami alert · Sea level high" + (alarmActive ? " + Mountain" : "");
+    $("alarmTxt").textContent = "Sea level high and strong shaking together · started " +
       fmtAgo((Date.now() - quakeAt) / 1000) + " · take cover · stops after 30 s of calm, or tap Silence";
   } else if (alarmActive) {
     $("alarmTitle").textContent = "Potential disaster · Mountain";
     $("alarmTxt").textContent = "Motion and vibration detected together · started " +
       fmtAgo((Date.now() - alarmAt) / 1000) + " · stops after 30 s of quiet, or tap Silence";
   }
-  document.title = quakeActive ? "⚠️ EARTHQUAKE · Smart City" : alarmActive ? "⚠️ DANGER · Smart City" : "Smart City Operations Center";
+  document.title = quakeActive ? "⚠️ TSUNAMI ALERT · Smart City" : alarmActive ? "⚠️ DANGER · Smart City" : "Smart City Operations Center";
   updateSiren();
 }
 
@@ -2310,7 +2313,7 @@ function paint() {
   paintSeismic();
   const sf = seisFresh() && seis;
   $("zd-seismic").className = "tdot" + (!sf ? "" : quakeActive || seisLevel(seis.intensity) >= 2 ? " warn" : " ok");
-  $("zt-seismic").textContent = !sf ? (seisSeenAt ? "Offline" : "No data") : quakeActive ? "EARTHQUAKE" : SEIS_WORDS[seisLevel(seis.intensity)];
+  $("zt-seismic").textContent = !sf ? (seisSeenAt ? "Offline" : "No data") : quakeActive ? "TSUNAMI ALERT" : SEIS_WORDS[seisLevel(seis.intensity)];
   const dOn = mxSeenAt > 0 && (Date.now() - mxSeenAt) < 6000;
   $("zd-display").className = "tdot" + (dOn ? " ok" : "");
   $("zt-display").textContent = dOn ? "Showing " + (DISP_NAMES[mxScreen] || "status").toLowerCase() : mxSeenAt ? "Offline" : "No data";
@@ -2323,7 +2326,7 @@ function paint() {
 }
 
 // ---- seismic monitor: live shake trace (5 samples a second, last 60 s) ----
-const SEIS_N = 300;
+const SEIS_N = 300, SEA_HIGH_CM = 4, QUAKE_SHAKE_MIN = 50;   // same as on the Pi
 let seis = null, seisSeenAt = 0, seisTrace = [], quakeActive = false, quakeAt = 0, quakePeak = 0;
 function seisFresh() { return seisSeenAt > 0 && (Date.now() - seisSeenAt) < 3000; }
 function seisLevel(v) { return v < 10 ? 0 : v < 35 ? 1 : v < 65 ? 2 : 3; }
@@ -2370,12 +2373,13 @@ function paintSeismic() {
   const L = seisLevel(peak);
   for (let i = 0; i < 4; i++) lv[i].classList.toggle("on", i === L);
   countTo($("seisInt"), seis.intensity);
-  $("seisWord").textContent = quakeActive ? "Earthquake detected · strongest " + quakePeak + "/100" : SEIS_WORDS[L];
-  pill.textContent = quakeActive ? "EARTHQUAKE" : SEIS_WORDS[L].split(" ")[0];
+  $("seisWord").textContent = quakeActive ? "Tsunami alert · strongest shake " + quakePeak + "/100" : SEIS_WORDS[L];
+  pill.textContent = quakeActive ? "TSUNAMI ALERT" : SEIS_WORDS[L].split(" ")[0];
   pill.className = "tag " + (quakeActive || L >= 2 ? "warn" : L === 1 ? "info" : "ok");
   $("seisCm").textContent = seis.cm === null ? "no echo" : seis.cm.toFixed(1) + " cm";
-  $("seisBase").textContent = seis.base === null ? "learning" : seis.base.toFixed(1) + " cm";
-  $("seisMove").textContent = seis.move.toFixed(1) + " cm";
+  $("seisBase").textContent = seis.cm === null ? "--" : seis.cm <= SEA_HIGH_CM ? "HIGH" : "Normal";
+  $("seisBase").style.color = seis.cm !== null && seis.cm <= SEA_HIGH_CM ? "#e0362a" : "";
+  $("seisMove").textContent = seis.intensity + " / 100";
   $("seisPulse").textContent = (seis.pulses * 5) + " /s";
 }
 setInterval(seisSample, 200);
@@ -2495,7 +2499,7 @@ function aiTick() {
   else if (vib > 0.2) drivers.push("vibration on the mountain");
   if (mot > 0.2) drivers.push("movement on the slope");
   aiSet("slide", pc(pSlide), pSlide, aiLevel(pSlide, ["Low", "Moderate", "High"]),
-        quakeActive ? "Earthquake detected · ground moved and shook" :
+        quakeActive ? "Tsunami alert · sea level high and strong shaking" :
         alarmActive ? "Disaster alarm active · motion and vibration together" :
         drivers.length ? "Driven by " + drivers.slice(0, 2).join(", ") : "Ground dry and still · slopes stable");
   aiSet("air", pc(pAir), pAir, aiLevel(pAir, ["Low", "Moderate", "High"]),
@@ -2512,7 +2516,7 @@ function aiTick() {
 
   // suggestion
   let s = "All clear · city running normally, no action needed";
-  if (quakeActive) s = "Earthquake! Take cover and keep everyone off the mountain road";
+  if (quakeActive) s = "Tsunami alert! Raise the sea wall and move people away from the coast";
   else if (alarmActive || pSlide >= 0.6) s = "Close the mountain road · landslide risk is high";
   else if (pAir >= 0.6) s = "Ventilate the area and keep people away from the gas source";
   else if (pSlide >= 0.3) s = "Watch the mountain slope · ground is getting wet";

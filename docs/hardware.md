@@ -104,7 +104,7 @@ prints a health line every second, for example
 If it says **NO ECHO** on 3.3 V, power the HC-SR04 from VIN (5V) and use the
 1 kΩ + 2 kΩ divider on Echo (`Echo → 1 kΩ → D7`, `D7 → 2 kΩ → G`).
 
-**Earthquake:** ground movement of 4 cm or more **and** shaking, together for 0.5 s.
+**Tsunami alert:** water 4 cm or closer to the ultrasonic sensor (sea level high) **and** a shake level of 50/100 or more, together for 0.5 s (`SEA_HIGH_CM`, `QUAKE_SHAKE_MIN` in `serial_dashboard.py`). The HC-SR04 cannot measure closer than about 2 cm.
 
 The node reports once a second when calm and 5 times a second while active, sends
 instantly when shaking starts, reads the ultrasonic with interrupts (no waiting),
